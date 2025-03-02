@@ -218,6 +218,12 @@ func (s *StorageNodeSet) Size() int {
 	return s.set.Size()
 }
 
+func (t *Trie) GetNodesFromRoot(key *felt.Felt) ([]StorageNode, error) {
+	storageKey := t.FeltToKey(key)
+	return t.nodesFromRoot(&storageKey)
+
+}
+
 // nodesFromRoot enumerates the set of [Node] objects that need to be traversed from the root
 // of the Trie to the node which is given by the key.
 // The [storageNode]s are returned in descending order beginning with the root.

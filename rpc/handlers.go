@@ -278,6 +278,16 @@ func (h *Handler) MethodsV0_8() ([]jsonrpc.Method, string) { //nolint: funlen
 			},
 			Handler: h.rpcv8Handler.StorageProof,
 		},
+		{
+			Name:    "juno_getBlockWithTxnHashesAndReceipts",
+			Params:  []jsonrpc.Parameter{{Name: "block_id"}},
+			Handler: h.rpcv8Handler.BlockWithTxnHashesAndReceipts,
+		},
+		{
+			Name:    "juno_getNodesFromRoot",
+			Params:  []jsonrpc.Parameter{{Name: "key"}},
+			Handler: h.rpcv8Handler.GetNodesFromRoot,
+		},
 	}, "/v0_8"
 }
 

@@ -601,3 +601,83 @@ func TestRpcBlockAdaptation(t *testing.T) {
 		require.Equal(t, &felt.Zero, blockWithTxHashes.BlockHeader.SequencerAddress)
 	})
 }
+
+func TestBlockWithTxHashesAndReceipts(t *testing.T) {
+	errTests := map[string]rpcv8.BlockID{
+		"latest":  {Latest: true},
+		"pending": {Pending: true},
+		"hash":    {Hash: new(felt.Felt).SetUint64(1)},
+		"number":  {Number: 1},
+	}
+	mockCtrl := gomock.NewController(t)
+	t.Cleanup(mockCtrl.Finish)
+
+	var mockSyncReader *mocks.MockSyncReader
+
+	for description, id := range errTests { //nolint:dupl
+		t.Run(description, func(t *testing.T) {
+			log := utils.NewNopZapLogger()
+			n := utils.Ptr(utils.Mainnet)
+			chain := blockchain.New(pebble.NewMemTest(t), n, nil)
+
+			if description == "pending" { //nolint:goconst
+				mockSyncReader = mocks.NewMockSyncReader(mockCtrl)
+				mockSyncReader.EXPECT().Pending().Return(nil, sync.ErrPendingBlockNotFound)
+			}
+
+			handler := rpcv8.New(chain, mockSyncReader, nil, "", log)
+
+			block, rpcErr := handler.BlockWithTxHashes(id)
+			assert.Nil(t, block)
+			assert.Equal(t, rpccore.ErrBlockNotFound, rpcErr)
+		})
+	}
+}
+
+func TestGetNodesFromRoot(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	t.Cleanup(mockCtrl.Finish)
+	mockReader := mocks.NewMockReader(mockCtrl)
+	mockStateReader := mocks.NewMockStateHistoryReader(mockCtrl)
+	handler := rpcv8.New(mockReader, nil, nil, "", nil)
+
+	trie := emptyTrie(t)
+	err := trie.Commit()
+	require.NoError(t, err)
+
+	mockReader.EXPECT().HeadState().Return(mockStateReader, func() error { return nil }, nil).AnyTimes()
+	t.Run("empty trie", func(t *testing.T) {
+		mockStateReader.EXPECT().ClassTrie().Return(trie, nil)
+
+		key := new(felt.Felt).SetUint64(1)
+		nodes, rpcErr := handler.GetNodesFromRoot(key)
+		require.Nil(t, rpcErr)
+		require.Empty(t, nodes)
+	})
+
+	kv1 := new(felt.Felt).SetUint64(1)
+	kv2 := new(felt.Felt).SetUint64(2)
+	kv3 := new(felt.Felt).SetUint64(3)
+	kv4 := new(felt.Felt).SetUint64(4)
+	trie.Put(kv1, kv1)
+	trie.Put(kv2, kv2)
+	trie.Put(kv3, kv3)
+	trie.Put(kv4, kv4)
+	trie.Commit()
+	mockStateReader.EXPECT().ClassTrie().Return(trie, nil).AnyTimes()
+
+	t.Run("trie with values", func(t *testing.T) {
+		nodes, rpcErr := handler.GetNodesFromRoot(kv1)
+		require.Nil(t, rpcErr)
+		require.Len(t, nodes.Nodes, 3)
+		require.Equal(t, *kv1, nodes.Nodes[len(nodes.Nodes)-1].Value)
+		require.Equal(t, *kv1, nodes.Nodes[len(nodes.Nodes)-1].Key)
+	})
+
+	t.Run("key not present in trie", func(t *testing.T) {
+		key := new(felt.Felt).SetUint64(5)
+		nodes, rpcErr := handler.GetNodesFromRoot(key)
+		require.Nil(t, rpcErr)
+		require.Len(t, nodes.Nodes, 2)
+	})
+}

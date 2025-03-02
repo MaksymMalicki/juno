@@ -3,10 +3,13 @@ package rpcv8
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/NethermindEth/juno/core"
 	"github.com/NethermindEth/juno/core/felt"
+	"github.com/NethermindEth/juno/db"
 	"github.com/NethermindEth/juno/jsonrpc"
+	"github.com/NethermindEth/juno/rpc/rpccore"
 	rpcv6 "github.com/NethermindEth/juno/rpc/v6"
 )
 
@@ -91,6 +94,13 @@ type BlockWithReceipts struct {
 	Transactions []TransactionWithReceipt `json:"transactions"`
 }
 
+type BlockWithTxnHashesAndReceipts struct {
+	Status rpcv6.BlockStatus `json:"status,omitempty"`
+	BlockHeader
+	TxnHashes    []*felt.Felt             `json:"txHashes"`
+	Transactions []TransactionWithReceipt `json:"transactions"`
+}
+
 /****************************************************
 		Block Handlers
 *****************************************************/
@@ -156,6 +166,45 @@ func (h *Handler) BlockWithReceipts(id BlockID) (*BlockWithReceipts, *jsonrpc.Er
 		BlockHeader:  adaptBlockHeader(block.Header),
 		Transactions: txsWithReceipts,
 	}, nil
+}
+
+func (h *Handler) BlockWithTxnHashesAndReceipts(id BlockID) (*BlockWithTxnHashesAndReceipts, *jsonrpc.Error) {
+	block, rpcErr := h.blockByID(&id)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+
+	blockStatus, rpcErr := h.blockStatus(id, block)
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	finalityStatus := TxnAcceptedOnL2
+	if blockStatus == rpcv6.BlockAcceptedL1 {
+		finalityStatus = TxnAcceptedOnL1
+	}
+
+	txsWithReceipts := make([]TransactionWithReceipt, len(block.Transactions))
+	txnHashes := make([]*felt.Felt, len(block.Transactions))
+	for index, txn := range block.Transactions {
+		r := block.Receipts[index]
+
+		t := AdaptTransaction(txn)
+		t.Hash = nil
+		txsWithReceipts[index] = TransactionWithReceipt{
+			Transaction: t,
+			// block_hash, block_number are optional in BlockWithReceipts response
+			Receipt: AdaptReceipt(r, txn, finalityStatus, nil, 0),
+		}
+		txnHashes[index] = txn.Hash()
+	}
+
+	return &BlockWithTxnHashesAndReceipts{
+		Status:       blockStatus,
+		BlockHeader:  adaptBlockHeader(block.Header),
+		Transactions: txsWithReceipts,
+		TxnHashes:    txnHashes,
+	}, nil
+
 }
 
 // BlockWithTxs returns the block information with full transactions given a block ID.
@@ -272,4 +321,51 @@ func nilToZero(f *felt.Felt) *felt.Felt {
 		return &felt.Zero
 	}
 	return f
+}
+
+type NodeInfo struct {
+	Key   felt.Felt `json:"key"`
+	Value felt.Felt `json:"value"`
+}
+
+type NodesFromRoot struct {
+	Nodes []NodeInfo `json:"nodes"`
+}
+
+func (h *Handler) GetNodesFromRoot(key *felt.Felt) (*NodesFromRoot, *jsonrpc.Error) {
+	stateReader, stateCloser, rpcErr := h.bcReader.HeadState()
+	if rpcErr != nil {
+		return nil, &jsonrpc.Error{
+			Message: "Failed to get state reader",
+		}
+	}
+	defer h.callAndLogErr(stateCloser, "Error closing state reader in juno_GetNodesFromRoot")
+	classTrie, err := stateReader.ClassTrie()
+	if err != nil {
+		if errors.Is(err, db.ErrKeyNotFound) {
+			return nil, rpccore.ErrContractNotFound
+		}
+		h.log.Errorw("Failed to get contract nonce", "err", err)
+		return nil, rpccore.ErrInternal
+	}
+
+	nodesFromRoot, err := classTrie.GetNodesFromRoot(key)
+	fmt.Println(key, nodesFromRoot, err)
+	if err != nil {
+		return nil, &jsonrpc.Error{
+			Message: "Failed to find node with given key",
+		}
+	}
+	response := NodesFromRoot{}
+
+	for _, node := range nodesFromRoot {
+		key := node.Key().Felt()
+		value := *node.Value()
+		response.Nodes = append(response.Nodes, NodeInfo{
+			Key:   key,
+			Value: value,
+		})
+	}
+
+	return &response, nil
 }
